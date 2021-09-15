@@ -1,0 +1,361 @@
+
+## Application of Kalman Filter, different MaximumLikelihood estimators and comparisons of mixture of normals and student_t distributed data to normal
+
+### import from another file 
+
+import numpy as np
+from scipy.optimize import minimize
+class kf_SV:
+    def recursions(y,gamma,phi,sigma_eta):        
+        S_e = (np.pi**2)/2      # define the measurement equation variance
+        S_eta = sigma_eta**2    # variance of the transition equation 
+        Obs = y.size        # number of observations
+        
+        h0 = gamma/(1-phi)          # unconditional mean as starting value
+        S0=S_eta/(1-phi**2)         #uncond. variance as starting value
+        filter_h = np.zeros(Obs+1)  # pre-allocate
+        filter_S = np.zeros(Obs+1)  # pre-allocate
+        predict_h = np.zeros(Obs)  # pre-allocate
+        predict_S = np.zeros(Obs)  # pre-allocate
+        v = np.zeros(Obs)  # pre-allocate
+        V = np.zeros(Obs)  # pre-allocate
+        K = np.zeros(Obs)  # pre-allocate
+        filter_h[0] = h0  # set startzing value to initial value
+        filter_S[0] = S0  # set starting value to inintial value
+        for t in range(0,Obs):
+            predict_h[t] = gamma + phi*filter_h[t]      # state prediction
+            predict_S[t] = (phi**2)*filter_S[t]+S_eta   # compute variance of prediction
+            v[t] = y[t]-predict_h[t]                    # compute the error to the measurement
+            V[t] = predict_S[t] + S_e                   # compute weighting
+            K[t] = predict_S[t]/V[t]                    # Kalman gain
+            filter_h[t+1] = predict_h[t]+K[t]*v[t]      # update the state prediction with new measurement info
+            filter_S[t+1] = predict_S[t]*(1-K[t])       # update the variance pred. with new measurement info            
+        filter_h = filter_h[1:]                         # delete initial value
+        filter_S = filter_S[1:]                         # delete initial value
+        return filter_h,filter_S,predict_h,predict_S,v,V,K
+
+
+    def smoothing(phi,filter_h,filter_S,predict_h,predict_S):
+        Obs = filter_h.size         # Number of obs.
+        smooth_h = np.zeros(Obs)    # pre-allocate
+        smooth_h[-1] = filter_h[-1] # pre- allocate
+        for t in range(2,Obs+1):
+            smooth_h[-t] = filter_h[-t]+(filter_S[-t]*phi/predict_S[-t])*(smooth_h[-t+1]-filter_h[-t])
+        return smooth_h
+
+    def log_lik(par0,y,OP=False):
+        gamma = par0[0] 
+        phi = par0[1]
+        sigma_eta = par0[2]        
+        _,_,_,_,v,V,_ = kf_SV.recursions(y,gamma,phi,sigma_eta) # obtain prediction error and pred. error variance from recursions
+        l = 0.5**np.log(2*np.pi)+0.5*(np.log(V)) +0.5*((v**2)/V) # compute the neg log likelihood
+        if OP == False:
+            l = np.sum(l)
+        if np.any(np.isnan(l)) or np.any(l == 0):
+            l = 1e8
+        return(l)
+    
+    def Grad(par0,y):
+        f0=kf_SV.log_lik(par0,y,OP=True)
+        T=len(f0)
+        k=len(par0)# number of parameters wrt which one should compute gradient
+
+        h=0.00000001#some small number
+
+        g=np.zeros([T,k]) #will contain the gradient
+        e=np.eye(k) 
+        for j in range(k):
+            if par0[j]>1: # if argument is big enough, compute relative number   
+                f1=kf_SV.log_lik(np.multiply(par0,np.ones(k)+e[:,j]*h),y,OP=True)
+                g[:,j]=(f1-f0)/(par0[j]*h)
+            else:
+                f1=kf_SV.log_lik(par0+e[:,j]*h,y,OP=True)
+                g[:,j]=(f1-f0)/h
+        return g
+
+    def Hess(par0,y):
+        k=len(par0)# number of parameters wrt which one should compute gradient
+
+        h=0.000000001#some small number
+        H = np.zeros([k,k])
+        e=np.eye(k) 
+        h2 = h/2
+        for ii,x in enumerate(np.arange(1,k+1)):
+            if par0[ii]>1: # if argument is big enough, compute relative number   
+                x0P = np.multiply(par0,(np.ones(k,1) + e[:,ii]*h2))
+                x0N = np.multiply(par0,(np.ones(k,1) - e[:,ii]*h2))
+                Deltaii = par0(ii)*h
+            else:
+                x0P = par0+e[:,ii]*h2
+                x0N = par0-e[:,ii]*h2
+                Deltaii = h
+                
+            for jj in range(x):           
+                if par0[jj]>1: # if argument is big enough, compute relative number   
+                    x0PP = np.multiply(x0P,(np.ones(k,1) + e[:,jj]*h2))
+                    x0PN = np.multiply(x0P,(np.ones(k,1) - e[:,jj]*h2))
+                    x0NP = np.multiply(x0N,(np.ones(k,1) + e[:,jj]*h2))
+                    x0NN = np.multiply(x0N,(np.ones(k,1) - e[:,jj]*h2))
+                    Delta = Deltaii*par0(jj)*h
+                else:
+                    x0PP = x0P + e[:,jj]*h2
+                    x0PN = x0P - e[:,jj]*h2
+                    x0NP = x0N + e[:,jj]*h2
+                    x0NN = x0N - e[:,jj]*h2
+                    Delta = Deltaii*h
+            
+                fPP= kf_SV.log_lik(x0PP,y)
+                fPN= kf_SV.log_lik(x0PN,y)
+                fNP= kf_SV.log_lik(x0NP,y)
+                fNN= kf_SV.log_lik(x0NN,y)
+                H[ii,jj]=(np.sum(fPP) - np.sum(fPN)-np.sum(fNP)+np.sum(fNN))/Delta
+                H[jj,ii] = H[ii,jj]
+        return H 
+    
+    def mle(y,par0=np.hstack([0,0.95,0.15]),out=True,std = 'Sandwich'):
+        bnds = ((None,None),(-0.9999,0.9999),(0.01,None)) # set the constrains for the parameters
+        estim = minimize(kf_SV.log_lik,par0,method='SLSQP',args = y, 
+                         bounds = bnds,tol=1e-8) # minimize the negative log likelihood function
+        MLE_est = estim.x  # save the estimated parameters
+        g = kf_SV.Grad(MLE_est,y)
+        H = kf_SV.Hess(MLE_est,y)
+        inv_H = np.linalg.inv(H)
+        OPG = np.linalg.inv(np.dot(g.T,g))
+        Sand = np.linalg.inv(H)*np.dot(g.T,g)*np.linalg.inv(H)
+        if std == 'standard':
+            MLE_se = np.sqrt(np.diag(inv_H))
+        elif std == 'OPG':
+            MLE_se = np.sqrt(np.diag(OPG))
+        else:
+            MLE_se = np.sqrt(np.diag(Sand))
+        
+        if out == True:
+            print(""," gamma "," phi "," s_eta ",sep="\t")     # print the estimation results
+            print("Estim.","%3.3f"% MLE_est[0],"%3.3f"% MLE_est[1],"%3.3f"% MLE_est[2],sep="\t")
+            print("Std.Err","%3.3f"% MLE_se[0],"%3.3f"% MLE_se[1],"%3.3f"% MLE_se[2],sep="\t")
+        return MLE_est,MLE_se,H,np.sum(g,0)
+        
+#### end KalmanFilter
+
+####################  Problem 1 ############################
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from kalman import kf_SV
+import scipy.stats as stats
+
+### Simulation of ln zt^2
+np.random.seed(42)
+z = np.random.normal(0,1,1000000)
+t = (np.log(z**2)-(-1.27))/np.sqrt(np.pi**2/2)
+
+fig = plt.figure()
+plt.hist(t, bins = 30, color='blue',density = True)
+xt = plt.xticks()[0]  
+xmin, xmax = min(xt), max(xt)  
+lnspc = np.linspace(xmin, xmax, len(t))
+plt.plot(lnspc, stats.norm.pdf(lnspc, 0, 1),lw = 2,color = 'red')
+
+np.random.seed(42)
+T = 5500
+gamma = 0
+phi = 0.95
+sigma_eta = np.sqrt(0.09)
+sigma_xi = np.sqrt(np.pi**2/2)
+SN_rat = sigma_eta/sigma_xi
+
+eps = np.random.normal(0,1,[T,1])
+eta = np.random.normal(0,sigma_eta,[T,1])
+
+h = np.zeros(T)
+r = np.zeros(T)
+h[0] = gamma/(1-phi)  # np.divide(mu.T,(1-np.diag(phi))).T
+r[0] = np.exp(h[0]/2)*eps[0]
+for t in range(1,T):
+    h[t] =  gamma + phi*h[t-1] + eta[t]
+    r[t] = np.exp(0.5*h[t])*eps[t]
+h = h[500:]
+r = r[500:]
+mu_z = -1.27
+
+y = np.log(r**2)-mu_z
+
+###  Using KF to illustrate noise vs information
+filter_h,filter_S,predict_h,predict_S,v,F,K = kf_SV.recursions(y,gamma,phi,sigma_eta)
+ci = [filter_h - 2*filter_S,filter_h + 2*filter_S]
+fig,ax = plt.subplots()
+ax.plot(h,c='k',label='True')
+ax.plot(filter_h,c='r',label = 'Filter')
+ax.plot(ci[0],c='grey',linestyle =':',label='CI')
+ax.plot(ci[1],c='grey',linestyle =':')
+leg = plt.legend()
+title = plt.title('True parameter values')
+#plt.show()
+
+###  different MLE variations
+mle_par,mle_se,H,G = kf_SV.mle(y,out=True,std='standard')
+mle_par,mle_se,H,G = kf_SV.mle(y,out=True,std='OPG')
+mle_par,mle_se,H,G = kf_SV.mle(y,out=True,std='Sandwich')
+gamma_est = mle_par[0]
+phi_est = mle_par[1]
+sigma_eta_est = mle_par[2]
+
+filter_h_MLE,filter_S_MLE,predict_h_MLE,predict_S_MLE,_,_,K = kf_SV.recursions(y,gamma_est,phi_est,sigma_eta_est)
+filter_ci_MLE = [filter_h_MLE - 2*filter_S_MLE,filter_h_MLE + 2*filter_S_MLE]
+
+### comparison
+fig,ax = plt.subplots()
+ax.plot(h,c='k',label='True')
+ax.plot(filter_h_MLE,c='g',label = 'MLE_Filter')
+ax.plot(filter_ci_MLE[0],c='grey',linestyle =':',label='CI')
+ax.plot(filter_ci_MLE[1],c='grey',linestyle =':')
+leg = plt.legend()
+title = plt.title('Estimated parameter values')
+
+
+fig,ax = plt.subplots()
+ax.plot(h,c='k',label='True')
+ax.plot(filter_h_MLE,c='g',label = 'MLE_Filter')
+ax.plot(predict_h_MLE,c='r',label='MLE_Predict')
+leg = plt.legend()
+title = plt.title('Kalman Recursions: SN Ratio = '"%2.4f"%SN_rat)
+
+smooth_h = kf_SV.smoothing(phi_est,filter_h,filter_S,predict_h,predict_S)
+fig,ax = plt.subplots()
+ax.plot(h,c='k',label='True')
+ax.plot(filter_h_MLE,c='g',label = 'MLE_Filter')
+ax.plot(predict_h_MLE,c='r',label='MLE_Predict')
+ax.plot(smooth_h,c='b',label='MLE_Predict')
+leg = plt.legend()
+title = plt.title('Kalman Recursions: SN Ratio = '"%2.4f"%SN_rat)
+
+
+
+####################  Problem 2 ############################
+
+
+                
+np.set_printoptions(precision = 4,suppress=True)
+from statsmodels.api import qqplot
+from scipy.optimize import minimize
+
+T = 5000
+rho = 0.8
+lam = 0.1
+
+def sim_mix(T,rho,lam):
+    s2 = lam/(rho*lam+1-rho)
+    x = np.zeros((T,1))
+    for t in range (T):
+        u=np.random.uniform(0,1,1)
+        if u<rho:
+            x[t]=np.random.normal(0,np.sqrt(s2))
+        else:
+            x[t]=np.random.normal(0,np.sqrt(s2/lam))
+    return(x)
+#simulate the mixture of two normals 
+x=sim_mix(T,rho,lam)
+
+def den_mix(rho,lam,n):
+    s2 = lam/(rho*lam+1-rho)
+    grid = np.linspace(-4*np.sqrt(s2/lam),4*np.sqrt(s2/lam),n)
+    den=rho*stats.norm.pdf(grid,0,np.sqrt(s2)) + (1-rho)*stats.norm.pdf(grid,0,np.sqrt(s2/lam))
+    return np.array([den,grid])
+
+#calculate theoretical density
+nbin = 1000
+den, grid = den_mix(rho,lam,nbin)
+
+plt.hist(x, bins=30, color='green', density=True)
+plt.plot(grid,den,lw=2,color='blue')
+plt.plot(grid,stats.norm.pdf(grid,0,1),lw=2,color='red')
+plt.title('Distribution of the simulated data',fontsize = 20)
+plt.legend(('scale-mixture','N(0,1)','data'),fontsize = 20)
+plt.show()
+
+#estimate rho and lambda
+def ll_mix(par,data):
+    rho=par[0]
+    lam=par[1]
+    s2 = lam/(rho*lam+1-rho)
+    l1=stats.norm.pdf(data,0,np.sqrt(s2))
+    l2=stats.norm.pdf(data,0,np.sqrt(s2/lam))
+    ll=-np.sum(np.log(rho*l1 + (1-rho)*l2))
+    return ll
+
+result = minimize(ll_mix, np.array([0.5,0.5]), method='SLSQP',args = (x), 
+                  bounds = [(1e-06,1),(1e-06,1)],options={'disp': True,'ftol':1e-10})
+
+estimates=result.x
+
+#compute the density with estimated parameters
+den_hat, grid_hat = den_mix(estimates[0],estimates[1],nbin)
+
+plt.plot(grid,den_hat,lw=2,color='blue')
+plt.plot(grid,den,lw=2,color='yellow',linestyle='dashed')
+plt.plot(grid,stats.norm.pdf(grid,0,1),lw=2,color='red')
+plt.title('Distribution of the simulated data',fontsize = 20)
+plt.legend(('estimated scale-mixture','true scale-mixture','N(0,1)'),fontsize = 20)
+plt.show()
+
+# PIT
+xx = np.random.normal(0,1,T)
+pit=stats.norm.cdf(xx,0,1)
+plt.hist(pit)
+pit=stats.norm.cdf(xx,0,2)
+plt.hist(pit)
+pit=stats.norm.cdf(xx,1,1)
+plt.hist(pit)
+pit=stats.t.cdf(xx,5)
+plt.hist(pit)
+
+#probability integral transform
+x=sim_mix(T,rho,lam)
+
+def pt_mix(x,rho,lam):
+    s2 = lam/(rho*lam+1-rho)
+    t_x=rho*stats.norm.cdf(x,0,np.sqrt(s2)) + (1-rho)*stats.norm.cdf(x,0,np.sqrt(s2/lam))
+    res=stats.kstest(t_x,'uniform')
+    pv=res[0]
+    plt.hist(t_x)
+    plt.title('Probability integral transform, KS test: p-value =%f' %pv,fontsize=20)
+
+pt_mix(x,rho,lam)
+
+#QQ plots
+qqplot(x.reshape((T,)),line='45')
+qqplot(np.random.normal(0,1,T),line='45')
+
+
+
+#degrees of freedom
+v = 5
+
+#student t
+y=0+1*np.sqrt((v-2)/v)*np.random.standard_t(v,T)
+
+#estimate rho and lambda
+result = minimize(ll_mix, np.array([0.5,0.5]), method='SLSQP',args = (y), 
+                  bounds = [(1e-06,1),(1e-06,1)],options={'disp': True,'ftol':1e-10})
+
+estimates=result.x
+print(estimates)
+
+#compute the denisty with estimated parameters
+den_hat, grid_hat = den_mix(estimates[0],estimates[1],nbin)
+
+plt.hist(y, bins=30, color='#00CDCD', density=True)
+plt.plot(grid_hat,den_hat,lw=2,color='blue')
+plt.plot(grid,stats.norm.pdf(grid,0,1),lw=2,color='red')
+plt.title('Distribution of the simulated data',fontsize = 20)
+plt.legend(('estimated scale-mixture','N(0,1)','data'),fontsize = 20)
+plt.show()
+
+#probability integral transform
+pt_mix(y,estimates[0],estimates[1])
+
+#qqplot
+qqplot(y,line='45')
+
+        

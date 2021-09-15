@@ -1,0 +1,206 @@
+### Creating and evaluating global mean variance portfolio, efficient portfolio (minimum variance using certainty equivalent optimisation)
+and equally weighted portfolio
+
+
+import pandas as pd
+from pandas import read_excel
+
+
+sns.set(color_codes=True)
+np.set_printoptions(precision = 4,suppress=True)
+plt.style.use('ggplot')
+
+## load data 
+
+file = r'30mPF.xls'
+df = read_excel('30mPF.xls')
+
+dates = df[df.columns[0]].values
+data = df[df.columns[1:]].values
+T,N = np.shape(data)
+gamma = 2
+m1 = 60  # five years preferred
+m2 = 120  # too many structural breaks
+
+# Portfolio startegies
+def gmvp(s):
+    n = np.size(s,axis=0)
+    iota = np.ones((n,1))
+    return (inv(s)@iota) / (iota.T@inv(s)@iota)
+
+def eff(s,mu,gamma):
+    n = np.size(s,axis=0)
+    iota = np.ones((n,1))
+    x = (inv(s) - (inv(s)@iota@iota.T@ inv(s))/(iota.T@inv(s)@iota)) @ mu
+    w = gmvp(s) + (1/gamma)*x.reshape(n,1)
+    return w
+
+def eqw(n):
+    return np.ones((n,1))/n
+
+### comparisons 
+   
+m = m1
+pf60 = np.zeros((T-m,3))  # returns
+w60 = np.zeros((T-m,N,3))  # three strategies
+
+for i in range(T-m):
+     #sample
+     sample = data[i:m+i,]
+     #calculate sample moments
+     mu60 = np.mean(sample,axis=0).T
+     s60 = np.cov(sample.T)
+     #calculate weights
+     w60[i,:,0] = gmvp(s60).reshape((N,))
+     w60[i,:,1] = eff(s60,mu60,gamma).reshape((N,))
+     w60[i,:,2] = eqw(N).reshape((N,))
+     # calculate out-of-sample portfolio returns
+     pf60[i,:] = w60[i,:,:].T @ data[i+m,]  # weights multiplied with t+1 returns
+
+# can use this to calculate mean, variance, sharpe ratio, CE
+
+# Plot Portfolio Compositions
+fig = plt.figure()
+x = np.array(range(1,len(w60)+1))
+title = np.array(['Prtf. Wghts GMVP M = '+str(m1), 
+                  'Prtf. Wghts Eff Prtf. M = '+str(m1),
+                  'Prtf. Wghts 1/N Prtf. M = '+ str(m1)])
+lim = np.array([np.min(np.cumsum(w60,axis=1)), np.max(np.cumsum(w60,axis=1))])
+for i in range(3):
+    ax = plt.subplot(1, 3, i+1)
+    ax.set_title(title[i])
+    ax.stackplot(x, list((w60[:,:,i]).T), edgecolor= "black", lw = 0.3)
+    ax.axis([0, T-m+1,lim[0]*1.05,lim[1]*1.05])
+plt.show()
+
+fig = plt.figure()
+for i in range(3):
+    ax = plt.subplot(1, 3, i+1)
+    ax.set_title(title[i])
+    plt.stackplot(x, list((w60[:,:,i]).T), edgecolor= "black", lw = 0.3)
+    plt.axis([0, T-m+1, 0, 1])
+plt.show()
+       
+
+
+#  M = 120
+m = m2
+pf120 = np.zeros((T-m,3))
+w120 = np.zeros((T-m,N,3))
+
+for i in range(T-m):
+     #sample
+     sample = data[i:m+i,]
+     #calculate sample moments
+     mu120 = np.mean(sample,axis=0).T
+     s120 = np.cov(sample.T)
+     #calculate weights
+     w120[i,:,0] = gmvp(s120).reshape((N,))
+     w120[i,:,1] = eff(s120,mu120,gamma).reshape((N,))
+     w120[i,:,2] = eqw(N).reshape((N,))
+     # calculate out-of-sample portfolio returns
+     pf120[i,:] = w120[i,:,:].T @ data[i+m,] 
+
+
+# Plot Portfolio Compositions
+
+fig = plt.figure()
+x = np.array(range(1,len(w120)+1))
+title = np.array(['Prtf. Wghts GMVP M = '+str(m2), 
+                  'Prtf. Wghts Eff Prtf. M = '+str(m2),
+                  'Prtf. Wghts 1/N Prtf. M = '+ str(m2)])
+lim = np.array([np.min(np.cumsum(w120,axis=1)), np.max(np.cumsum(w120,axis=1))])
+for i in range(3):
+    ax = plt.subplot(1, 3, i+1)
+    ax.set_title(title[i])
+    plt.stackplot(x, list((w120[:,:,i]).T), edgecolor= "black", lw = 0.3)
+    ax.axis([0, T-m+1,lim[0]*1.05,lim[1]*1.05])
+plt.show()
+
+fig = plt.figure()
+for i in range(3):
+    ax = plt.subplot(1, 3, i+1)
+    ax.set_title(title[i])
+    plt.stackplot(x, list((w120[:,:,i]).T), edgecolor= "black", lw = 0.3)
+    plt.axis([0, T-m+1, 0, 1])
+plt.show()
+
+# Calculate CEs
+ce60 = np.zeros((3,1))
+ce120 = np.zeros((3,1))
+for i in range(3):
+    ce60[i] = np.mean(pf60[m1:,i]) - (gamma/2) * np.var(pf60[m1:,i])
+    ce120[i] = np.mean(pf120[:,i]) - (gamma/2) * np.var(pf120[:,i])
+
+print('Full variance-covariance matrix')    
+pd.DataFrame(np.column_stack([ce60,ce120]), columns=['ce60','ce120']) 
+
+
+# Part 
+pf60 = np.zeros((T,3))
+pf120 = np.zeros((T,3))
+weights60 = np.zeros((T,N,3))
+weights120 = np.zeros((T,N,3))
+
+for i in range(m2,T):
+    #Calculate Sample Moments
+    mu60 = np.mean(data[i-m1:i,:],0).reshape(N,1)
+    sigma60 = np.diag(np.diag(np.cov((data[i-m1:i,:]).T)))
+    mu120 = np.mean(data[i-m2:i,:],0)
+    sigma120 = np.diag(np.diag(np.cov((data[i-m2:i,:]).T)))
+    
+    # Calculate Weights
+    weights60[i,:,0] = gmvp(sigma60).T
+    weights60[i,:,1] = eff(sigma60,mu60,gamma).T
+    weights60[i,:,2] = eqw(N).T
+    weights120[i,:,0] = gmvp(sigma120).T
+    weights120[i,:,1] = eff(sigma120,mu120,gamma).T
+    weights120[i,:,2] = eqw(N).T
+    
+    # Calculate Portfolio returns
+    pf60[i,:] = weights60[i,:,:].T @ data[i,] 
+    pf120[i,:] = weights120[i,:,:].T @ data[i,] 
+
+
+weights60 = weights60[m2:,:,:]
+weights120 = weights120[m2:,:,:]
+pf60 = pf60[m2:,:]
+pf120 = pf120[m2:,:]
+
+# Plot Portfolio Compositions
+fig = plt.figure()
+x = np.array(range(1,len(weights60)+1))
+title = np.array(['Prtf. Wghts GMVP M = '+str(m1), 
+                  'Prtf. Wghts Eff Prtf. M = '+str(m1),
+                  'Prtf. Wghts 1/N Prtf. M = '+ str(m1)])
+for i in range(3):
+    ax = plt.subplot(2,3, i+1)
+    ax.set_title(title[i])
+    plt.stackplot(x, list((weights60[:,:,i]).T), edgecolor= "black", lw = 0.3)
+    plt.axis([0, T-m+1, 0, 1])
+
+x = np.array(range(1,len(weights120)+1))
+title = np.array(['Prtf. Wghts GMVP M = '+str(m2), 
+                  'Prtf. Wghts Eff Prtf. M = '+str(m2),
+                  'Prtf. Wghts 1/N Prtf. M = '+ str(m2)])
+for i in range(3):
+    ax = plt.subplot(2,3, i+4)
+    ax.set_title(title[i])
+    plt.stackplot(x, list((weights120[:,:,i]).T), edgecolor= "black", lw = 0.3)
+    plt.axis([0, T-m+1, 0, 1])
+plt.show()
+ 
+
+# Calculate CEs
+ce60 = np.zeros((3,1))
+ce120 = np.zeros((3,1))
+for i in range(3):
+    ce60[i] = np.mean(pf60[:,i]) - (gamma/2)*np.var(pf60[:,i])
+    ce120[i] = np.mean(pf120[:,i]) - (gamma/2)*np.var(pf120[:,i])
+
+print('Diagonal Variance Matrix')
+pd.DataFrame(np.column_stack([ce60,ce120]), columns=['ce60','ce120']) 
+
+
+
+

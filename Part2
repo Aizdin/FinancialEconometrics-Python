@@ -1,0 +1,413 @@
+
+## Skills shown: Autocorrelation tests, ARMA, ARCH, GARCH, model comparison, forecast evaluation
+
+
+### imports
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+import seaborn as sns
+import pandas as pd
+from pandas import read_csv
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
+from statsmodels.tsa.arima_model import ARIMA, ARMAResults
+
+sns.set(color_codes=True)
+np.set_printoptions(precision = 4,suppress=True)
+
+# useful functions
+def lr(x):
+    return np.log(x[1:]) - np.log(x[:-1])
+
+def dstats(x):
+    T = np.size(x,0)
+    mu = np.sum(x,0)/T
+    sigma2 = np.sum((x-mu)**2,axis=0)/T
+    sigma = np.sqrt(sigma2)
+    skew = np.sum((x-mu)**3/(sigma**3),axis=0)/T
+    kurt = np.sum((x-mu)**4/(sigma**4),axis=0)/T
+    d = np.array([mu, sigma, skew, kurt])
+    return d
+
+def JBtest(x):
+    T = np.size(x,0)
+    moments = dstats(x)
+    '''Jarque-Bera test for normality'''
+    t_JB = (T/6)*(moments[2]**2 + ((moments[3]-3)**2)/4)
+    pv_JB =(1- stats.chi2.cdf(t_JB,2))
+    return np.column_stack((t_JB,pv_JB))
+
+####################  Problem 1 ############################
+
+### load data
+data = read_csv('s&p_500_daily.csv',header = None)
+sp = data[1].values
+
+plt.plot(sp)
+plt.show()
+
+#ADF test
+from statsmodels.tsa.stattools import adfuller
+result = adfuller(sp,regression = 'c') # ct - constant and trend; nc - no constant no trend
+print('ADF Statistic: %f' % result[0])
+print('p-value: %f' % result[1])
+print('Critical Values:')
+for key, value in result[4].items():
+	print('\t%s: %.3f' % (key, value))
+# If the pvalue is larger than the critical size, we cannot reject that there IS a unit root.
+
+
+### first difference
+sp1d = sp[1:]-sp[:-1]
+result = adfuller(sp1d,regression = 'c') # ct - constant and trend; nc - no constant no trend
+print('ADF Statistic: %f' % result[0])
+print('p-value: %f' % result[1])
+# the test rejects the null hypothesis of the unit root => I(1)
+
+
+### Log returns
+
+sp = lr(sp)
+plt.plot(sp)
+dstats(sp)
+JBtest(sp)
+
+###  Autocorrelations
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(sp,lags = 25,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(sp,lags = 25,ax = ax)
+plt.show()
+
+# Both seem to cut off after two/three lags, some significant lags later
+# hard to tell -> further analysis needed
+
+### ARMA(p,q)
+
+#estimation with an ARMA constant of zero:
+p = 1
+q = 0
+model = ARIMA(sp, order=(p,0,q))
+model_fit = model.fit(trend = 'c',disp=0)
+model_fit.summary()
+
+AIC = model_fit.aic
+BIC = model_fit.bic
+resid = model_fit.resid
+
+fig = plt.figure()
+ax = fig.add_subplot(121)
+plot_acf(resid,lags = 25,ax = ax)
+ax = fig.add_subplot(122)
+plot_pacf(resid,lags = 25,ax = ax)
+fig.suptitle("ARMA " + str((p, q)))
+plt.show()
+
+# Loop for all possible combinations 
+
+
+aicbic = np.zeros((9,2))
+rnm = []
+LBQ = np.zeros((9,2)); LM = np.zeros((9,2))
+i = 0
+for q in range(3):
+    for p in range(3):
+        model = ARIMA(sp, order=(p,0,q))
+        par0 = np.hstack([0,np.repeat(0.1,p+q)]).reshape(p+q+1,1)
+        model_fit = model.fit(trend = 'c',disp=0,start_params = par0) #
+        aicbic[i,:] = np.array([model_fit.aic,model_fit.bic])
+        resid = model_fit.resid
+        rnm = np.append(rnm,str((p,q)))
+        #ACF and PACF of model SQUARED residuals
+        fig = plt.figure()
+        ax = fig.add_subplot(121)
+        plot_acf(resid**2,lags = 100,ax = ax)
+        ax = fig.add_subplot(122)
+        plot_pacf(resid**2,lags = 100,ax = ax)
+        fig.suptitle("ARMA " + str((p, q)))
+        plt.show()
+        # LBQ test
+        ts,pv = acorr_ljungbox(resid**2)
+        LBQ[i,:] = np.array([ts[-1],pv[-1]])
+        # ARCH-LM test by Engle
+        res = het_arch(resid)
+        LM[i,:] = res[:2]
+        i= i+1
+
+df = pd.DataFrame(aicbic, columns=['AIC','BIC'], index=rnm)
+df.sort_values(by = ['BIC'], inplace=True)
+print(df)
+# Prefered Model (by BIC): ARMA(0,2)
+# No evidence for the ARMA structure for the both criteria
+
+pd.DataFrame(LBQ, columns=['LBQ','pval'], index=rnm)
+pd.DataFrame(LM, columns=['LM','pval'], index=rnm)
+
+### Out-of-sample forecast
+fc = np.zeros((40,9))
+for t in range(40):
+    sample = sp[1900+t:2000+t] # rolling window of 100 obs
+    i = 0
+    for q in range(3):
+        for p in range(3):
+            model= ARIMA(sample, order=(p,0,q)) #MA(2)
+            par0 = np.hstack([0,np.repeat(0.1,p+q)]).reshape(p+q+1,1)
+            m_fit = model.fit(trend = 'c',disp=0,start_params = par0,method='css')
+            fc[t,i] = m_fit.forecast()[0]
+            i = i+1
+###  forecast evaluations
+
+def evalforecast(forecast,true,crit):
+    if crit==1: #RMSFE
+        y=np.sqrt(np.mean((forecast - true)**2,axis =0))
+    elif crit==2: #MAPE
+        y= np.mean(np.abs(forecast-true),axis = 0)
+    elif crit==3: #MDAPE
+        y= np.median(np.abs(forecast-true),axis = 0)
+    elif crit==4: #MPE
+        y=np.mean(forecast-true,axis = 0);
+    return y
+
+true = sp[2001:2041].reshape(40, 1)
+RES = pd.DataFrame(np.matrix([evalforecast(fc,true,1),evalforecast(fc,true,2)]).T,columns=['RMSFE','MAPE'],index = rnm)
+RES.sort_values(by =['RMSFE'],inplace=True)
+print(RES)
+RES.sort_values(by =['MAPE'],inplace=True)
+print(RES)
+# differences are very small, need to check whether forecasts are significantly different from each other -> DM test
+
+### Diebold Mariano test
+
+def dmtest(f1,f2,true,test):
+    T = len(f1)
+    d = (f1-true)**2-(f2-true)**2 #using squared loss differential
+    if test==1: # Sign test
+        y = (2/np.sqrt(T))*(np.sum(d>0)-0.5*T)
+        pv =2*(1- stats.norm.cdf(np.abs(y)))
+    elif test==2: # Diebold-Mariano test
+        dbar = np.mean(d)
+        vard = d.var()/T # if multi-step ahead forecast, the variance term is ugly
+        y = dbar/np.sqrt(vard)
+        pv =2*(1- stats.norm.cdf(np.abs(y)))
+    return np.array([y,pv])
+true = sp[2001:2041].reshape(40)
+crit,pval = np.zeros(8),np.zeros(8)
+for i in range(8):
+    crit[i],pval[i] = dmtest(fc[:,0],fc[:,i+1],true,1)
+
+#plot for comparison
+fig = plt.figure()
+plt.plot(true,label='S&P500',lw = 4)
+plt.plot(fc)
+
+fig = plt.figure()
+plt.plot(true,label='S&P500',lw = 4)
+plt.plot(fc[:,0],label='WN',lw = 4)
+plt.plot(fc[:,6],label='MA(2)',lw = 4)
+plt.legend(fontsize = 20)
+
+
+
+####################  Problem 2 ############################
+
+
+###  Simulate ARMA(p,q)- GARCH(p*,q*)
+def sim_arma_garch(par,p,q,T_u):
+    burnin = 500
+    T = T_u+burnin
+    ''' Stage 1: Simulate ARCH/GARCH innovations'''
+    omega = par[2]
+    alpha = par[3]
+    beta = par[4]
+    z = np.random.normal(0,1,T+p+q)
+    eps = np.zeros((T+p+q,1))
+    eps[0] = z[0]*(omega/(1-alpha-beta)) # set a starting value
+    for i in range(1,T+p+q):
+        sigma = np.sqrt(omega + alpha*(eps[i-1]**2) + beta*(eps[i-1]/z[i-1])**2)
+        eps[i] = sigma*z[i]
+    eps = eps[burnin:] # cut the burnin
+    ''' Stage 2: Simulate ARMA(p,q)'''
+    phi = par[0]
+    theta = par[1]
+    
+    Y = np.zeros((T_u+p,1))
+    Y[0:p] = eps[0:p] # set starting values
+    eps = eps[p:]
+    for t in range(T_u):
+        if p>0:
+            Y0 = Y[t:p+t]
+        else:
+            Y0 = 0
+        if q>0:
+            eps0 = eps[t:q+t]
+        else:
+            eps0 = 0
+        Y[p+t] = phi*Y0 + theta*eps0 + eps[q+t]
+    if p>0:
+        Y = Y[1:]
+    if q>0:
+        eps = eps[1:]
+    return np.column_stack((Y,eps))
+### analyze simulated series
+T = 10000
+omega = 0.01
+alpha = 0.1
+beta = 0.8  
+phi = 0.5
+theta = 0.3
+#Models:
+# 1) AR(1)     - ARCH(1)
+# 2) MA(1)     - ARCH(1)
+# 3) ARMA(1,1) - ARCH(1)
+# 4) ARMA(1,1) - GARCH(1,1)
+pq = np.array([[1,0,1,0], [0,1,1,0],[1,1,1,0],[1,1,1,1]]) # p, q, p*, q*
+par = np.array([phi,theta,omega,alpha,beta])
+
+y_sim = np.zeros((T,4))
+e_sim = np.zeros((T,4))
+
+for i in range(4):
+    if pq[i,0] == 0:
+        par[0] = 0
+    if pq[i,1] == 0:
+        par[1] = 0
+    if pq[i,3] == 0:
+        par[4] = 0
+    xx = sim_arma_garch(par,pq[i,0],pq[i,1],T)
+    y_sim[:,i] = xx[:,0]
+    e_sim[:,i] = xx[:,1]
+    par = np.array([phi,theta,omega,alpha,beta])
+
+# Analyze descriptive statistic
+dstats(y_sim)
+JBtest(y_sim)
+
+fig = plt.figure()
+fig.suptitle('SACF')
+for i in range(4):
+    ax = fig.add_subplot(4,1,i+1)
+    plot_acf(y_sim[:,i],lags = 25,ax = ax)
+    plt.title("ARMA " + str(pq[i,:2]) + "GARCH"+ str(pq[i,2:]))
+    plt.subplots_adjust(hspace = 0.4)
+    
+fig = plt.figure()
+fig.suptitle('SPACF')
+for i in range(4):
+    ax = fig.add_subplot(4,1,i+1)
+    plot_pacf(y_sim[:,i],lags = 25,ax = ax)
+    plt.title("ARMA " + str(pq[i,:2]) + "GARCH"+ str(pq[i,2:]))
+    plt.subplots_adjust(hspace = 0.4)
+
+###  Squared residuals
+
+dstats(e_sim**2)
+JBtest(e_sim**2)
+
+LBQ = np.zeros((4,2)); LM = np.zeros((4,2))
+rnm = []
+for i in range(4):
+    # LBQ test
+    ts,pv = acorr_ljungbox(e_sim[:,i]**2)
+    LBQ[i,:] = np.array([ts[-1],pv[-1]])
+    # ARCH-LM test by Engle
+    res = het_arch(e_sim[:,i])
+    LM[i,:] = res[:2]
+    rnm = np.append(rnm,str(("ARMA " + str(pq[i,:2]) + " GARCH"+ str(pq[i,2:]))))
+
+pd.DataFrame(LBQ, columns=['LBQ','pval'], index=rnm)
+pd.DataFrame(LM, columns=['LM','pval'], index=rnm)
+
+### ARMA(1,1) - GARCH(1,1) estimation
+# Self written:
+
+data = y_sim[:,-1]
+# Step 1: Estimate ARMA(1,1)
+p = 1
+q = 1
+C = 1
+par0 = np.array([0.1,0.2,0.3,0.4])
+def arma_ll(par0,x,p,q,C,out=None):
+    ''' Likelihood function to estimate ARMA'''
+    T = len(x)
+    phi = par0[:p]
+    theta = par0[p:p+q] 
+    c = par0[p+q]
+    sigma = par0[-1]
+    ll = 0
+    e = np.zeros((T,1))
+    mpq = max(p,q)
+    for t in range(mpq+1,T):
+        e[t] = x[t]  - c - phi*x[t-1:t-1-p:-1] - theta*e[t-1:t-1-q:-1]
+        ll = ll + e[t]**2
+    
+    ll = ll/(2*sigma**2) + np.log(sigma**2)*(T-mpq)/2 + np.log(2*np.pi)*(T-mpq)/2
+    if out is None:
+        return ll
+    else:
+        return ll,e
+# Nonlinear constraint: stationarity
+def stationary(par0,p):
+    phi= np.append(1,-par0[:p])
+    z = np.roots(phi[::-1])
+    if z.size>0:
+        return np.array(np.min(np.abs(z))-1)
+    else:
+        return 0
+# Define constraint function for optimization
+arma_stat = {'type': 'ineq','fun': stationary, 'args' : (p,)}
+# Minimize the likelihood subject to stationarity constraint
+from scipy.optimize import minimize
+loglik = minimize(arma_ll, par0, method='SLSQP',args = (data,p,q,C), 
+                  constraints =  arma_stat,
+                  bounds = [(-1000.0,1000.0),(-1000.0,1000.0),(-1000.0,1000.0), (0.1,1000.0)],options={'disp': True})
+estimates = loglik.x #parameter estimates
+
+
+# Built-in to check: 
+model = ARIMA(data, order=(1,0,1))
+model_fit = model.fit(trend = 'c',disp=0)
+model_fit.summary()
+
+# get residuals:
+ll, e = arma_ll(estimates,data,p,q,C,out=True)
+
+# Step 2: Estimate GARCH(1,1) on the residuals
+
+def ll_garch11(par0,x, out=None):
+    T = np.size(x,axis = 0)
+    omega = par0[0]
+    alpha = par0[1]
+    beta = par0[2]
+    
+    s2 =np.ones((T+1,1))*omega/(1-alpha-beta)
+    x = np.append(0,x).reshape(T+1,1)
+    
+    for t in range(1,T+1):
+        s2[t] = omega + alpha*x[t-1]**2 + beta*s2[t-1]
+    s2 = s2[1:]
+    ll = T*np.log(2*np.pi)/2 + np.sum(np.log(s2))/2 + np.sum(np.divide(x[1:]**2,2*s2))
+    ll = ll
+    if out is None:
+        return ll
+    else:
+        return ll,s2
+
+
+garch_stat = {'type': 'ineq','fun': lambda x: 1 - x[1] - x[2]}
+par0 = np.array([0.4,0.3,0.4])
+loglik = minimize(ll_garch11, par0, method='SLSQP',args = (data), constraints =  garch_stat,
+                  bounds = [(0.0,1000.0),(0.0,1000.0),(0.0,1000.0)],options={'disp': True,'ftol':1e-10})  # constraints for the parameters 
+estimates = loglik.x #parameter estimates
+
+ll, s2 = ll_garch11(par0, data)
+
+# Built-in to check:
+from arch import arch_model 
+
+am = arch_model(e)
+res = am.fit()
+res.summary()
+

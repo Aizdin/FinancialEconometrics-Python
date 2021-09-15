@@ -1,0 +1,143 @@
+## tasks done: Vola prediction using GARCH, HAR, Stochastic Volatility model, VaR estimation
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from pandas import read_csv
+from arch import arch_model
+import scipy.stats as stats
+from kalman import kf_SV
+sns.set(color_codes=True)
+np.set_printoptions(precision = 4,suppress=True)
+from finmetrics_fun import lr, evalforecast,dmtest
+from heterogeneousar import heterogeneousar
+
+####################  Problem 1 ############################
+
+### load data
+data = read_csv('IBM_5min.csv',header = None)
+ibm_price=data[2].values
+days=int(len(ibm_price)/79)
+
+ibm=np.zeros((78,days))
+for i in range(days):
+    day=ibm_price[i*79:(i+1)*79]
+    ibm[:,i]=lr(day)
+
+rv=np.sum(ibm**2,axis=0)
+dailyret=lr(ibm_price[::79])
+
+#plot
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.plot(dailyret)
+plt.title('Daily log returns',fontsize = 20)
+
+fig.add_subplot(1,2,2)
+plt.plot(rv)
+plt.title('Realized Volatility',fontsize = 20)
+plt.show()
+
+H=10#1000 #window size
+
+cols = ['HAR','GARCH','SV','True']
+fc = pd.DataFrame(np.hstack([np.zeros([H,3]),rv[-H:].reshape(H,1)]),columns=cols)
+
+#Estimate HAR-model
+par_har,_,_,_,_,_ =heterogeneousar(np.sqrt(rv[:-H]),1,[1,5,22])
+#Estimate GARCH(1,1)-model
+m1 = arch_model(dailyret[:-H]*100,mean='Zero',p=1,o=0,q=1)
+res = m1.fit()
+par_gch = res.params
+#Estimate SV-model
+dailyret[dailyret==0] = 1e-5
+inp = np.log((dailyret[:-H]*100)**2) + 1.27
+par_sv,_,_,_,_,_  = kf_SV.mle(inp,out=True,std='OPG',par0=np.hstack([0.01,0.95,0.15]))
+h,_,pred_h,pred_S,_,_,_,_,_ = kf_SV.recursions(inp,par_sv[0],par_sv[1],par_sv[2])
+
+#Predicting
+for i in range(H):
+    window=rv[i:-H+i]
+    Ret = dailyret[i:-H+i]*100
+    # HAR model
+    parameters,_, _, _, _,_=heterogeneousar(np.sqrt(window),1,[1,5,22])
+    # predictions
+    x1=1 #constant
+    x2 = np.sqrt(window[-1]) # RV daily
+    x3 = np.sqrt(np.mean(window[-5:])) # RV weekly
+    x4 = np.sqrt(np.mean(window[-22:])) # RV monthly
+    fc['HAR'][i]=np.dot(parameters,np.array([x1,x2,x3,x4]))**2
+    m=arch_model(Ret,mean='zero',p = 1,o=0,q=1)
+    res = m.fit(disp='off')
+    fc['GARCH'][i] = m.forecast(res.params).variance.values[-1]/10000
+    window=np.log(Ret**2) +1.27
+    par_sv,_,_,_,_,_ = kf_SV.mle(window,out=False,std='OPG',par0=par_sv,init=h[1])
+    h,_,pred_h,pred_S,_,_,_,_,_ = kf_SV.recursions(window,par_sv[0],par_sv[1],par_sv[2])
+    fc['SV'][i] = np.exp(pred_h[-1]+0.5*pred_S[-1])/10000
+    print(i)
+
+
+RMSFE = pd.DataFrame(data=np.zeros([1,3]),columns=cols[:-1])
+for c in cols[:-1]:
+    RMSFE[c] = evalforecast(fc[c],fc['True'],2)
+print(round(RMSFE,8))
+
+test1 = pd.DataFrame(np.zeros([2,2]),columns = cols[1:-1],index=["stat","pval"])
+for c in cols[1:-1]:
+    test1[c] = dmtest(fc['HAR'],fc[c],fc['True'],1)
+print(round(test1,4))
+
+test2 = pd.DataFrame(np.zeros([2,2]),columns = cols[1:-1],index=["stat","pval"])
+for c in cols[1:-1]:
+    test2[c] = dmtest(fc['HAR'],fc[c],fc['True'],2)
+print(round(test2,4))
+
+#make a plot of all volatility forecasts
+plt.plot(fc['True'],lw=4)
+plt.plot(fc[cols[:-1]],lw=2)
+plt.legend(cols,fontsize = 20)
+plt.title('Forecasting Performace',fontsize = 20)
+plt.show()
+
+#use volatility models to forecast VaR with probability level 0.05 and a normal innovation distribution. 
+#For comparison, calculate VaR based on fitted normal distribution.
+
+alpha=0.05
+
+mu=np.mean(dailyret[-H:])
+cols2 = cols[:-1]
+cols2.append('N')
+VaR = pd.DataFrame(np.zeros([H,4]),columns=cols2)
+for c in cols2[:-1]:
+    VaR[c] = np.exp(stats.norm.ppf(alpha)*np.sqrt(fc[c])+mu)-1     
+VaR['N']=(np.exp(stats.norm.ppf(alpha)*np.std(dailyret[-H:])+mu)-1)*np.ones([H,1])
+
+plt.plot(dailyret[-H:],lw=4)
+plt.plot(VaR,lw=2)
+plt.legend(["logreturn","HAR","GARCH(1,1)","SV","N(0,1)"],fontsize = 20)
+plt.show()
+
+ES = pd.DataFrame(np.zeros([H,4]),columns=cols2)
+for c in cols2[:-1]:
+    a = VaR[c]
+    alph = (a-mu)/np.sqrt(fc[c])
+    l = -stats.norm.pdf(alph)/stats.norm.cdf(alph)
+    ES[c] = mu + np.sqrt(fc[c])*l     
+a = VaR['N']
+alph = (a-mu)/np.std(dailyret[1:H])
+l = -stats.norm.pdf(alph)/stats.norm.cdf(alph)
+ES['N']= mu + np.std(dailyret[1:H])*l
+plt.plot(dailyret[-H:],lw=4)
+plt.plot(ES,lw=2)
+plt.legend(["True","HAR","GARCH","SV"])
+plt.show()
+
+# Unconditional Backtest (counts the number of violations) - if model good, hits are not clustered over time but Bernoulli distributed
+
+bt = pd.DataFrame(np.zeros([4,3]),index=cols2,columns=["HIT","t","p"])
+for c in cols2:
+    bt['HIT'][c] = np.sum(VaR[c]>dailyret[-H:])
+    bt['t'][c] = (bt['HIT'][c] - H*alpha)/np.sqrt(H*alpha*(1-alpha))
+    bt['p'][c]= 2*(1-stats.norm.cdf(np.abs(bt['t'][c])))
+

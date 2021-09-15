@@ -1,0 +1,368 @@
+## various GARCH models, News Impact Curve, realised volatility, HAR model, vola predictions, evaluations 
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pandas import read_csv
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.stats.diagnostic import het_arch
+from arch import arch_model
+from statsmodels.tsa.arima_model import ARIMA
+sns.set(color_codes=True)
+np.set_printoptions(precision = 4,suppress=True)
+# Functions written earlier
+from finmetrics_fun import lr, dstats, JBtest,evalforecast,dmtest
+
+
+####################  Problem 1 ############################
+
+### check data 
+data = read_csv('s&p_500_daily.csv',header = None)
+SP = data[1].values
+
+sp = lr(SP)
+
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.plot(SP)
+plt.title('Daily prices S&P 500',fontsize = 20)
+
+fig.add_subplot(1,2,2)
+plt.plot(sp)
+plt.title('Daily log returns S&P 500',fontsize = 20)
+
+print(dstats(sp))
+print(JBtest(sp))
+# ARCH-LM test by Engle
+res = het_arch(sp)
+print(res[:2])
+
+#Autocorrelations
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(sp,lags = 25,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(sp,lags = 25,ax = ax)
+plt.show()
+
+# => Step 1: filter our the conditional mean with ARMA(2,2)
+
+model = ARIMA(sp, order=(2,0,2))
+model_fit = model.fit(trend = 'nc',disp=0)
+model_fit.summary()
+eps = model_fit.resid
+
+# Analyze residuals:
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(eps,lags = 25,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(eps,lags = 25,ax = ax)
+plt.show()
+
+# ARCH-LM test by Engle
+res = het_arch(eps)
+print(res[:2])
+
+# Analyze squared residuals:
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(eps**2,lags = 50,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(eps**2,lags = 50,ax = ax)
+plt.show()
+
+### TGARCH and EGARCH
+# Step 2: model conditional variance:
+
+#GARCH(1,1)
+am = arch_model(eps*100)
+res = am.fit()
+res.summary()
+s_garch=res.conditional_volatility
+
+#TGARCH(1,1)
+am = arch_model(eps*100,p=1,o=1,q=1)
+res = am.fit()
+res.summary()
+s_tgarch=res.conditional_volatility
+#EGARCH(1,1)
+am = arch_model(eps*100,p=1,o=1,q=1,vol='egarch')
+res = am.fit()
+res.summary()
+s_egarch=res.conditional_volatility
+
+#Plot the in-sample fit
+plt.plot((eps*100)**2,color = 'blue', linewidth=4)
+plt.plot(s_garch,color = 'red', linewidth=4)
+plt.plot(s_tgarch,color = 'green', linewidth=4)
+plt.plot(s_egarch,color = 'yellow', linewidth=4)
+plt.show()
+
+#Compare ACF
+fig = plt.figure()
+ax = fig.add_subplot(2,2,1)
+plot_acf(eps**2,lags = 25,ax = ax)
+plt.title('Squared Residuals')
+ax = fig.add_subplot(2,2,2)
+plot_acf((eps/s_garch)**2,lags = 25,ax = ax)
+plt.title('GARCH(1,1)')
+ax = fig.add_subplot(2,2,3)
+plot_acf((eps/s_tgarch)**2,lags = 25,ax = ax)
+plt.title('TGARCH(1,1)')
+ax = fig.add_subplot(2,2,4)
+plot_acf((eps/s_egarch)**2,lags = 25,ax = ax)
+plt.title('EGARCH(1,1)')
+plt.show()
+
+#RMSE
+rmse=np.sqrt(np.mean((np.array([s_garch,s_tgarch,s_egarch])-(eps*100)**2)**2,axis=1))
+print(rmse)
+# GARCH has lower RMSE
+
+### News Impact Curve
+w = 0.05
+a = 0.1
+b=0.8
+g=0.3
+alpha=-0.2 #EGARCH
+T = 500 #length of the series
+
+nicG=np.zeros((T,1))
+nicE=np.zeros((T,1))
+nicT=np.zeros((T,1))
+
+ve = w/(1-a-b) #unconditional variance of Y
+e = np.linspace(-5,5,T) #grid of shocks epsilon
+for t in range(T):
+    nicG[t]=w+b*ve + a*e[t]**2
+    if e[t]>0:
+        nicE[t]=ve**b*np.exp(w-g*np.sqrt(2/np.pi))*np.exp((alpha+g)*e[t]/np.sqrt(ve))
+        nicT[t]=w+b*ve + a*e[t]**2
+    else:
+        nicE[t]=ve**b*np.exp(w-g*np.sqrt(2/np.pi))*np.exp((alpha-g)*e[t]/np.sqrt(ve))
+        nicT[t]=w+b*ve + (a+g)*e[t]**2
+
+plt.plot(e,nicG,lw=5)
+plt.plot(e,nicT,lw=5)
+plt.plot(e,nicE,lw=5)
+plt.legend(["GARCH(1,1)","TGARCH(1,1)","EGARCH(1,1)"],fontsize = 24)
+plt.title('News Impact Curve',fontsize=24)
+plt.xlabel('$\epsilon_{t-1}$',fontsize=24)
+plt.ylabel('$NIC[\epsilon_{t-1}|\sigma^2_{t-1} = \sigma^2_Y]$',fontsize=24)
+plt.show()
+
+####################  Problem 2 ############################
+
+from statsmodels.api import qqplot
+import scipy.stats as stats
+import pandas as pd
+### a) b) Compute RV
+data = read_csv('IBM_5min.csv',header = None)
+ibm_price=data[2].values
+ibm_price = ibm_price[:107993] # calm period 02.01.2001 - 30.06.2006
+# How did the results change if we consider the whole period?
+days=int(len(ibm_price)/79)
+
+ibm=np.zeros((78,days))
+for i in range(days):
+    day=ibm_price[i*79:(i+1)*79]
+    ibm[:,i]=lr(day)
+
+rv=np.sum(ibm**2,axis=0)
+dailyret=lr(ibm_price[::79])
+
+### Standardized residuals and RV
+#plot
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.plot(dailyret)
+plt.title('Daily log returns',fontsize = 20)
+
+fig.add_subplot(1,2,2)
+plt.plot(rv)
+plt.title('Realized Volatility',fontsize = 20)
+plt.show()
+#Ananlyze ACF and PACF
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(rv,lags = 50,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(rv,lags = 50,ax = ax)
+plt.show()
+
+#standardized log returns
+stdlr=np.divide(dailyret,np.sqrt(rv[1:]))
+#QQ plot nagainst N(0,1) quantiles
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.plot(stdlr)
+plt.title('Standardized daily log returns',fontsize = 18)
+
+ax = fig.add_subplot(1,2,2)
+qqplot(stdlr,ax=ax,line='45')
+plt.title('QQ plot of standirdized daily log returns against standard normal quantiles',fontsize = 18)
+plt.show()
+#QQ plot nagainst t_5 quantiles
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.plot(stdlr)
+plt.title('Standardized daily log returns',fontsize = 18)
+
+ax = fig.add_subplot(1,2,2)
+qqplot(stdlr,stats.t, distargs=(5,),ax=ax,line='45')
+plt.title('QQ plot of standirdized daily log returns against $t_5$ quantiles',fontsize = 18)
+plt.show()
+
+#Ananlyze ACF and PACF of standardized returns
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(stdlr,lags = 50,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(stdlr,lags = 50,ax = ax)
+plt.show()
+#Ananlyze ACF and PACF of squared standardized returns
+fig = plt.figure()
+ax = fig.add_subplot(1,2,1)
+plot_acf(stdlr**2,lags = 50,ax = ax)
+ax = fig.add_subplot(1,2,2)
+plot_pacf(stdlr**2,lags = 50,ax = ax)
+plt.show()
+
+#compare the distributions
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.hist(dailyret, bins = 30, color='#00CDCD',density = True)
+xt = plt.xticks()[0]# find minimum and maximum of xticks
+xmin, xmax = min(xt), max(xt)  
+lnspc = np.linspace(xmin, xmax, len(dailyret))
+# fitting the normal distribution 
+m, s = stats.norm.fit(dailyret) # get mean and standard deviation  
+pdf_g = stats.norm.pdf(lnspc, m, s) # now get theoretical values in our interval  
+plt.plot(lnspc, pdf_g,lw=4) # plot it
+plt.title('Histogram of daily log returns',fontsize = 18)
+
+fig.add_subplot(1,2,2)
+plt.hist(stdlr, bins = 30, color='#00CDCD',density = True)       
+xt = plt.xticks()[0]# find minimum and maximum of xticks
+xmin, xmax = min(xt), max(xt)  
+lnspc = np.linspace(xmin, xmax, len(stdlr))
+# fitting the normal distribution 
+m, s = stats.norm.fit(stdlr) # get mean and standard deviation  
+pdf_g = stats.norm.pdf(lnspc, m, s) # now get theoretical values in our interval  
+plt.plot(lnspc, pdf_g,lw=4) # plot it
+plt.title('Histogram of standardized daily log returns',fontsize = 18)
+plt.show() 
+
+#RV vs log(RV)
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.plot(np.log(rv))
+plt.title('log RV')
+fig.add_subplot(1,2,2)
+plt.hist(np.log(rv), bins = 30, color='#00CDCD',density = True)
+# for more colors see e.g. https://www.w3schools.com/colors/colors_names.asp         
+xt = plt.xticks()[0]# find minimum and maximum of xticks
+xmin, xmax = min(xt), max(xt)  
+lnspc = np.linspace(xmin, xmax, len(np.log(rv)))
+# fitting the normal distribution 
+m, s = stats.norm.fit(np.log(rv)) # get mean and standard deviation  
+pdf_g = stats.norm.pdf(lnspc, m, s) # now get theoretical values in our interval  
+plt.plot(lnspc, pdf_g,lw=4) # plot it
+plt.title('Histogram of log RV',fontsize = 18)
+plt.show()
+
+#Compare the descriptive statistics
+dstats(dailyret)
+dstats(stdlr)
+
+
+### Volatility Signature Plot
+
+#plot mean RV somputed at different intraday frequences: 5,10,15,...,45
+step = np.arange(2,9)
+rv_sig=np.zeros((len(step),1))
+for j in range(len(step)):
+    s=step[j]
+    rv_step=np.zeros((days,1))
+    for i in range(days):
+        day=ibm_price[i*79:(i+1)*79]
+        lr_step=np.log(day[s::s])-np.log(day[0:-s:s])
+        rv_step[i]=np.sum(lr_step**2,axis=0)
+    rv_sig[j]=np.mean(rv_step)
+
+rv_plot=np.append(np.mean(rv),rv_sig)
+
+fig = plt.figure()
+plt.plot(np.arange(5,45,5),rv_plot,lw=6,linestyle=':',marker='o',markersize=20,color='r')
+plt.xlabel('frequency, min',fontsize=20)
+plt.ylabel('RV',fontsize=20)
+plt.title('Signature Plot',fontsize=20)
+plt.show()
+
+
+
+#Estimate HAR-model
+from heterogeneousar import heterogeneousar  # AR function to estimate the HAR model
+
+parameters, errors, SEregression, diagnostics, VCVrobust, VCV=heterogeneousar(np.sqrt(rv),1,[1,5,22])
+#Estimate AR(1)
+model = ARIMA(np.sqrt(rv), order=(1,0,0))
+model_fit = model.fit(trend='c',disp=0)
+model_fit.summary()
+
+H=100#1000 #window size
+harf=np.zeros((H,1))
+arf=np.zeros_like(harf)
+#Predicting 
+for i in range(H):
+    window=rv[i:-H+i]
+    # HAR model
+    parameters,_, _, _, _,_=heterogeneousar(np.sqrt(window),1,[1,5,22])
+    # predictions
+    x1=1 #constant
+    x2 = np.sqrt(window[-1]) # RV daily
+    x3 = np.sqrt(np.mean(window[-5:])) # RV weekly
+    x4 = np.sqrt(np.mean(window[-22:])) # RV monthly
+    harf[i]=np.dot(parameters,np.array([x1,x2,x3,x4]))
+    # AR(1) model
+    mdl=ARIMA(np.sqrt(window), order=(1,0,0))
+    model_fit = mdl.fit(disp=0)
+    parameters2 = model_fit.params
+    arf[i]=np.dot(parameters2,np.array([x1,x2]))
+
+# GARCH(1,1) forecasting
+gch=np.zeros((H,1))
+for i in range(H):
+    window=100*dailyret[i:-H+i]
+    #GARCH model
+    m1 = arch_model(window,mean='Zero',p=1,o=0,q=1)
+    res = m1.fit(disp='off')
+    x = res.forecast().variance
+    gch[i]=x.iloc[-1].values/10000
+
+
+true=rv[-H:].reshape(H,1)
+
+eval = pd.DataFrame(data=[evalforecast(arf**2,true,1),
+                          evalforecast(harf**2,true,1),
+                          evalforecast(gch,true,1)],index=["AR","HAR","GARCH"])
+print(eval)
+test1 = pd.DataFrame(np.stack([dmtest(harf**2,arf**2,true,1),
+                               dmtest(harf**2,gch,true,1)]),columns=["stat","pval"],
+                               index=["AR","GARCH"])
+print(test1)
+test2 = pd.DataFrame(np.stack([dmtest(harf**2,arf**2,true,2),
+                               dmtest(harf**2,gch,true,2)]),columns=["stat","pval"],
+                               index=["AR","GARCH"])
+print(test2)
+
+#make a plot of all volatility forecasts
+plt.plot(true,lw=4,color="k")
+plt.plot(arf**2,lw=3,color="r")
+plt.plot(harf**2,lw=3,color="g")
+plt.plot(gch,lw=3,color="b")
+plt.legend(["RV","AR(1)","HAR","GARCH(1,1)"],fontsize = 20)
+plt.title('Forecasting Performace',fontsize = 20)
+plt.show()

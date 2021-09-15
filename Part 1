@@ -1,0 +1,355 @@
+# Shows understanding of working with financial data - descriptive statistics, non-normality, log returns better than simple returns
+
+
+
+# imports
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats 
+import seaborn as sns
+import pandas as pd 
+from pandas import read_csv
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+# End Imports
+sns.set(color_codes=True)
+np.set_printoptions(precision = 4,suppress=True)
+
+
+# Useful functions
+def lr(x):
+    return np.log(x[1:]) - np.log(x[:-1])
+    
+def dstats(x):
+    T = np.size(x,0)
+    mu = np.sum(x,0)/T
+    sigma2 = np.sum((x-mu)**2,axis=0)/T
+    sigma = np.sqrt(sigma2)
+    skew = np.sum((x-mu)**3/(sigma**3),axis=0)/T
+    kurt = np.sum((x-mu)**4/(sigma**4),axis=0)/T
+    d = np.array([mu, sigma, skew, kurt])
+    return d
+    
+####################  Problem 1 ############################
+## Properties of Logarithmic vs. Simple Returns
+
+
+### load data
+csv_data = read_csv('ibm_2001_2013.csv',header = None)
+IBM = np.array(csv_data)
+
+# Generate simple returns
+def sr(x):
+    return x[1:]/x[:-1]-1
+ibm_sim = sr(IBM)
+
+# Generate log returns
+ibm_log = lr(IBM)
+
+# Descriptive Statistics
+
+print('Descriptive Statistics for simple and log returns')
+print(dstats(np.column_stack((ibm_sim,ibm_log))))
+
+def JBtest(x):
+    T = np.size(x,0)
+    moments = dstats(x)
+    '''Jarque-Bera test for normality'''
+    t_JB = (T/6)*(moments[2]**2 + ((moments[3]-3)**2)/4)
+    pv_JB =(1- stats.chi2.cdf(t_JB,2))
+    return np.column_stack((t_JB,pv_JB))
+
+JBtest(np.column_stack((ibm_sim,ibm_log)))
+
+# Not much of a difference, except for log returns being slightly more negatively skewed
+
+### Comparision to Normal and t distributions
+
+ibm_s = ibm_sim/ibm_sim.std()
+ibm_l = ibm_log/ibm_log.std()
+
+fig = plt.figure()
+fig.add_subplot(1,2,1)
+plt.hist(ibm_l, bins = 50, color='silver',density = True)
+xt = plt.xticks()[0]  
+xmin, xmax = min(xt), max(xt)  
+lnspc = np.linspace(xmin, xmax, len(ibm_l))
+plt.plot(lnspc, stats.norm.pdf(lnspc, 0, 1),lw = 4,color = 'red')
+plt.plot(lnspc, stats.t.pdf(lnspc,1),lw = 4,color = 'green')
+plt.plot(lnspc, stats.t.pdf(lnspc,5),lw = 4,color = 'darkblue')
+plt.legend(['N(0,1)','t(1)','t(5)','return'],fontsize=15)
+plt.title('PDF Comparison for Log Returns')
+
+fig.add_subplot(1,2,2)
+plt.hist(ibm_s, bins = 50, color='silver',density = True)
+xt = plt.xticks()[0]  
+xmin, xmax = min(xt), max(xt)  
+lnspc = np.linspace(xmin, xmax, len(ibm_s))
+plt.plot(lnspc, stats.norm.pdf(lnspc, 0, 1),lw = 4,color = 'red')
+plt.plot(lnspc, stats.t.pdf(lnspc,1),lw = 4,color = 'green')
+plt.plot(lnspc, stats.t.pdf(lnspc,5),lw = 4,color = 'darkblue')
+plt.legend(['N(0,1)','t(1)','t(5)','return'],fontsize=15)
+plt.title('PDF Comparison for Simple Returns')
+plt.show()
+
+
+# Can't tell much from the estimated density plots, calm period of ibm stocks more or less, no "Black Monday"
+
+### Generate aggregated returns
+
+def aggret(x,freq):
+    if freq==1:
+        total = 5 #weekly aggregation
+    elif freq==2:
+        total =20 #monthly aggregation
+    elif freq==3:
+        total = 250 #yearly aggregation 
+    else:
+        print('Error: Wrong Aggregation frequency specified')
+    T = np.size(x,0)
+    T_freq = int(np.floor(T/total))
+    res = np.zeros((T_freq,1))
+    for j in range(T_freq):
+        agg = np.cumsum(x[j*total:total + j*total,])
+        res[j] = agg[-1]
+    return res
+
+ibm_w = aggret(ibm_log,1)
+ibm_m = aggret(ibm_log,2)
+ibm_y = aggret(ibm_log,3)
+
+
+#Histogram
+
+fig = plt.figure()
+fig.add_subplot(2,2,1)
+x = ibm_log
+(mu, sigma) = stats.norm.fit(x) # fit normal
+# the histogram of the data
+n, bins, patches = plt.hist(x, bins = 60, density=1)
+y = stats.norm.pdf( bins, mu, sigma) # add the fitted normal
+l = plt.plot(bins, y, color = 'red', linewidth=4)
+plt.title(r'$\mathrm{Histogram\ of\ daily\ log\ returns :}\ \mu=%.3f,\ \sigma=%.3f$' %(mu, sigma))
+
+fig.add_subplot(2,2,2)
+x = ibm_w
+(mu, sigma) = stats.norm.fit(x) # fit normal
+# the histogram of the data
+n, bins, patches = plt.hist(x, bins = 40, density=1)
+y = stats.norm.pdf( bins, mu, sigma) # add the fitted normal
+l = plt.plot(bins, y, color = 'red', linewidth=4)
+plt.title(r'$\mathrm{Histogram\ of\ weekly\ log\ returns :}\ \mu=%.3f,\ \sigma=%.3f$' %(mu, sigma))
+
+fig.add_subplot(2,2,3)
+x = ibm_m
+(mu, sigma) = stats.norm.fit(x) # fit normal
+# the histogram of the data
+n, bins, patches = plt.hist(x, bins = 20, density=1)
+y = stats.norm.pdf( bins, mu, sigma) # add the fitted normal
+l = plt.plot(bins, y, color = 'red', linewidth=4)
+plt.title(r'$\mathrm{Histogram\ of\ monthly\ log\ returns :}\ \mu=%.3f,\ \sigma=%.3f$' %(mu, sigma))
+
+fig.add_subplot(2,2,4)
+x = ibm_y
+(mu, sigma) = stats.norm.fit(x) # fit normal
+# the histogram of the data
+n, bins, patches = plt.hist(x,bins =5, density=1)
+y = stats.norm.pdf( bins, mu, sigma) # add the fitted normal
+l = plt.plot(bins, y, color = 'red', linewidth=4)
+plt.title(r'$\mathrm{Histogram\ of\ yearly\ log\ returns :}\ \mu=%.3f,\ \sigma=%.3f$' %(mu, sigma))
+plt.show()
+
+# Descriptive statistic
+np.column_stack((dstats(ibm_log),dstats(ibm_w),dstats(ibm_m),dstats(ibm_y)))
+
+np.row_stack((JBtest(ibm_log),JBtest(ibm_w),JBtest(ibm_m),JBtest(ibm_y)))
+
+####################  Problem 2 ############################
+
+
+
+### Compare the power of normality tests
+alpha = 0.05 #significance level
+MC = 1000 #number of Monte-Carlo repetitions
+res = np.empty((6,0)) #memory allocation
+TT = [10,100,1000]
+
+for j in range(3):
+    T = TT[j]
+    JB = np.zeros((MC,6)); KS = np.zeros((MC,6))
+    
+    for m in range(MC):
+        x1 = np.random.normal(0,1,T)
+        x2 = np.random.normal(0,5,T)
+        x3 = np.random.standard_t(1,T)
+        x4 = np.random.standard_t(5,T)
+        x5 = np.random.standard_t(50,T)
+        x6 = np.random.chisquare(2,T)
+        X = np.column_stack((x1,x2,x3,x4,x5,x6))
+        
+        jb = np.zeros((6,2))
+        ks = np.zeros((6,2))
+        for i in range(6):
+            jb[i,:] = stats.jarque_bera(X[:,i])
+            ks[i,:] = stats.kstest(X[:,i],'norm')
+        
+        
+        JB[m,:] = jb[:,1]<=alpha
+        KS[m,:] = ks[:,1]<=alpha
+    
+    
+    rt = np.column_stack((JB.mean(axis = 0),KS.mean(axis = 0)))
+    res = np.append(res,rt,axis=1)
+
+res = pd.DataFrame(res, index=['N(0,1)','N(0,s)','t(1)','t(5)','t(50)','chi2'], 
+                         columns=['JB T=10','KS T=10','JB T=100','KS T=100','JB T=1000','KS T=1000'])
+# Empirical null rejection probabilities:
+print(res)
+
+### (c) Interpretations
+# 1) T has to be sufficiently large for the test to have some power
+# 2) KS test is testing against N(0,1), sensitive to sigma
+# 3) Student t with large DoF is difficult to distinguish from normal
+
+
+####################  Problem 3 ############################
+
+
+### load data
+csv_data = read_csv('xdax_60.csv',header = None)
+DAX = np.array(csv_data[csv_data.columns[-1]])
+
+# Plot 
+fig = plt.figure()
+fig.add_subplot(2,2,1)
+plt.plot(DAX)
+plt.title('Level Series DAX 60 min')
+
+fig.add_subplot(2,2,2)
+plt.hist(DAX,bins = 50, density = True,)
+plt.title('Histogram DAX 60 min')
+
+ax = fig.add_subplot(2,2,3)
+plot_acf(DAX,lags = 500,ax = ax)
+
+ax = fig.add_subplot(2,2,4)
+plot_pacf(DAX,lags = 30,ax = ax)
+
+plt.show()
+
+### DAX log-returns and Squared log returns
+dax = lr(DAX)
+dax_s = dax**2
+
+csv_data[7] = np.append(0,dax)
+csv_data[8] = np.append(0,dax_s)
+df = csv_data
+ndf = df[df[5] != 9]
+
+ndax = ndf[ndf.columns[-2]].values
+ndax = ndax[1:]
+
+
+# Descriptive Statistics and JB of both series
+np.column_stack((dstats(dax),dstats(ndax)))
+
+np.row_stack((JBtest(dax),JBtest(ndax)))
+
+# Plot everything for comprison
+fig = plt.figure()
+fig.add_subplot(4,2,1)
+plt.plot(dax)
+plt.title('Log-returns DAX 60 min')
+
+fig.add_subplot(4,2,2)
+plt.plot(ndax)
+plt.title('Log-returns w/o overnight DAX 60 min')
+
+fig.add_subplot(4,2,3)
+(mu, sigma) = stats.norm.fit(dax) # fit normal
+n, bins, patches = plt.hist(dax, bins = 40, density=1) # the histogram of the data
+y = stats.norm.pdf( bins, mu, sigma) # add the fitted normal
+l = plt.plot(bins, y, color = 'red', linewidth=4)
+
+fig.add_subplot(4,2,4)
+(mu, sigma) = stats.norm.fit(ndax) # fit normal
+n, bins, patches = plt.hist(ndax, bins = 40, density=1) # the histogram of the data
+y = stats.norm.pdf( bins, mu, sigma) # add the fitted normal
+l = plt.plot(bins, y, color = 'red', linewidth=4)
+
+ax = fig.add_subplot(4,2,5)
+plot_acf(dax,lags = 30,ax = ax)
+
+ax = fig.add_subplot(4,2,6)
+plot_acf(ndax,lags = 30,ax = ax)
+
+ax = fig.add_subplot(4,2,7)
+plot_pacf(dax,lags = 30,ax = ax)
+
+ax = fig.add_subplot(4,2,8)
+plot_pacf(ndax,lags = 30,ax = ax)
+
+plt.subplots_adjust(hspace = 0.4)
+plt.show()
+
+
+# Plot squared log returns for comprison
+fig = plt.figure()
+fig.add_subplot(3,2,1)
+plt.plot(dax**2)
+plt.title('Squared log-returns DAX 60 min')
+
+fig.add_subplot(3,2,2)
+plt.plot(ndax**2)
+plt.title('Squared log-returns w/o overnight DAX 60 min')
+
+ax = fig.add_subplot(3,2,3)
+plot_acf(dax**2,lags = 30,ax = ax)
+
+ax = fig.add_subplot(3,2,4)
+plot_acf(ndax**2,lags = 30,ax = ax)
+
+ax = fig.add_subplot(3,2,5)
+plot_pacf(dax**2,lags = 30,ax = ax)
+
+ax = fig.add_subplot(3,2,6)
+plot_pacf(ndax**2,lags = 30,ax = ax)
+
+plt.subplots_adjust(hspace = 0.4)
+plt.show()
+
+### Annualized returns
+
+# Scaled mean and standard deviation
+dax.std()*np.sqrt(250*8)
+ndax.std()*np.sqrt(250*8)
+dax.mean()*(250*8)
+ndax.mean()*(250*8)
+
+# Annualized simple return and log return
+
+year = np.array([98,99,0,1,2,3])
+stack = np.empty((0,0)) #memory allocation
+for yr in range(len(year)):
+    ydata = df[df[2] == year[yr]]
+    yret = np.prod(1+ydata[7].values)
+    stack = np.append(stack,yret) 
+
+
+ansimpret=pow((np.prod(stack)),1/6)-1
+anlogret=(1/6)*sum(dax)
+
+# Annualized simple return and log return without overnight
+
+year = np.array([98,99,0,1,2,3])
+stack = np.empty((0,0)) #memory allocation
+for yr in range(len(year)):
+    ydata = ndf[ndf[2] == year[yr]]
+    yret = np.prod(1+ydata[7].values)
+    stack = np.append(stack,yret) 
+
+
+ansimpret=pow((np.prod(stack)),1/6)-1
+anlogret=(1/6)*sum(ndax)
+
+
